@@ -1,0 +1,1 @@
+{"name":"shuttle-syndicate-v1-4-4","version":"1.4.4","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview","test":"node core-test.cjs"},"devDependencies":{"vite":"^7.1.0"}}
