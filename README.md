@@ -1,41 +1,75 @@
-# Shuttle Syndicate V1.4.4
+# Shuttle Syndicate V1.4.5
 
-V1.4.4 continues the V1.4.2 baseline without Supabase or authentication.
+Shuttle Syndicate is a browser-based private recurring weekend 2v2 badminton tournament organizer.
 
-## Implemented focus
-- Preserved tournament type and configuration workflow.
-- Equal 2v2 mathematical schedule validation.
-- Improved partner/opponent diversity scheduling.
-- Player check-in and explicit START LEAGUE.
-- Independent court replacement when a court finishes, with live eligibility based on the currently selected/available players.
-- New tournaments begin with every player unchecked; the organizer checks in only players available at the start, and can add late arrivals later.
-- Duplicate live/next candidate prevention.
-- Dynamic NEXT and ON DECK candidate views.
-- Live score entry with no browser spinner arrows.
-- Full schedule/player filtering and ranking statistics.
-- Completed league score correction with automatic ranking recalculation.
-- Team-vs-Team playoff paths for 12–14 and 16+ players.
-- Round Robin Top-8 qualification and Trump Card assignment.
-- Interactive semifinal/final playoff scoring and winner propagation.
-- Champion appears only after the final.
-- Result banner generated from tournament data and downloadable as SVG after the final.
-- Responsive layout for desktop and mobile.
-- Live fixture names are kept together as readable side-by-side team strings for clearer score entry.
-- Team-vs-Team rankings are ranked independently inside Sky Smashers and Net Hunters; top 4 in each team are highlighted, while the 16+ player qualifier path still exposes ranks 5–6.
-- Footer preserved as `Created by Irfan Shaik`.
+## V1.4.5 changes
 
-## Admin page and weekly tournaments
-- The app has a permanent Admin entry in the top bar.
-- The admin page is also addressable with `#admin`, so after GitHub Pages deployment you can bookmark the Admin URL.
-- Create each new weekly tournament from Admin, generate its tournament-specific `#board=...` Game Board link, and share that link with players.
-- This version has no authentication: anyone who has the deployed site can reach the Admin page.
-- Tournament state is browser/localStorage based; the encoded board link carries the tournament state but is not realtime synchronized across devices.
+1. Shared Player/Game Board links no longer expose the `ADMIN` button.
+2. Live tournament state can synchronize across devices through Supabase Realtime.
+3. Live court opponents are displayed side by side with a centered `VS` for both Round Robin and Team vs Team.
 
-## Run
+The existing V1.4.4 tournament engine, scheduling rules, rankings, playoffs, Trump Cards, and result flow are preserved.
 
-```bash
-npm.cmd install
-npm.cmd run dev -- --host 0.0.0.0
+## Realtime setup
+
+GitHub Pages is static hosting, so V1.4.5 uses Supabase as the central tournament state store.
+
+### 1. Create a Supabase project
+
+Create a project in Supabase and open its SQL Editor.
+
+### 2. Run the database setup
+
+Run the complete contents of:
+
+`supabase-schema.sql`
+
+The schema creates `public.shuttle_tournaments`, enables Realtime, and creates the `upsert_shuttle_tournament` RPC. The RPC uses a per-tournament admin possession key. The key is stored in the browser session and hashed in the database; it is not included in the shared player state.
+
+### 3. Configure the browser client
+
+Edit `supabase-config.js`:
+
+```js
+window.SHUTTLE_SUPABASE = {
+  url: "https://YOUR-PROJECT.supabase.co",
+  anonKey: "YOUR-PUBLISHABLE-OR-ANON-KEY"
+};
 ```
 
-V1.4.4 remains local/browser-state based. The encoded Game Board link is not realtime synchronized across devices. Supabase remains deferred.
+Use only the public/publishable (anon) key. Never use a `service_role` key in this project.
+
+### 4. Generate and share a tournament
+
+Admin opens:
+
+`#admin`
+
+Generate the tournament. The generated Game Board link now contains only the tournament ID, not the complete tournament JSON.
+
+Player devices open the shared `#board=<tournament-id>` link. They read the central tournament state and subscribe to its Realtime updates.
+
+### 5. Live scoring
+
+The Admin view is the score-entry view. Player/shared links are read-only for scores.
+
+When the Admin confirms a score:
+
+`Admin → Supabase → Realtime → all connected Player links`
+
+The same tournament state updates on every connected device.
+
+## Local validation
+
+Run:
+
+```bash
+npm test
+npm run build
+```
+
+The comprehensive core tests continue to cover schedule generation, initial court allocation, live flow, rankings, playoffs, configuration limits, and both tournament types.
+
+## Important security boundary
+
+V1.4.5 removes Admin controls from the shared player UI and uses a per-tournament admin possession key for realtime writes. It is not a full user-account authentication system. A future version can replace the possession key with Supabase Auth and role-based RLS for stronger identity-based administration.
