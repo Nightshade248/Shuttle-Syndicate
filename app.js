@@ -1,7 +1,7 @@
 const APP_VERSION="V1.4.5";
 const KEY="ss_v143_tournament";const OLD_KEY="ss_v142_tournament";
 const safeSession=window.sessionStorage||{getItem(){return ""},setItem(){}};
-const state={page:"admin",tournament:null,adminDraft:null,generatedLink:"",shared:false,canScore:false,adminKey:safeSession.getItem("ss_v145_admin_key")||"",realtime:{client:null,channel:null,enabled:false,loading:false}};
+const state={page:"admin",tournament:null,adminDraft:null,generatedLink:"",shared:false,canScore:false,adminKey:safeSession.getItem("ss_v145_admin_key")||(()=>{const k="SS-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);safeSession.setItem("ss_v145_admin_key",k);return k})(),realtime:{client:null,channel:null,enabled:false,loading:false}};
 const SUPABASE_CONFIG=window.SHUTTLE_SUPABASE||{url:"",anonKey:""};
 let remoteApplying=false;
 async function initRealtimeClient(){if(state.realtime.client||!SUPABASE_CONFIG.url||!SUPABASE_CONFIG.anonKey)return state.realtime.client;try{const mod=await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");state.realtime.client=mod.createClient(SUPABASE_CONFIG.url,SUPABASE_CONFIG.anonKey);state.realtime.enabled=true;return state.realtime.client}catch(err){console.warn("Shuttle Syndicate realtime unavailable",err);return null}}
