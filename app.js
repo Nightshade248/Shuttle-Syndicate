@@ -25,25 +25,472 @@ function maxUniqueGames(pc,type){if(type==="Team vs Team"){const side=pc/2;retur
 function validConfig(pc,courts,hours,gpp,type){const total=calcGames(pc,gpp);return Number.isInteger(pc)&&pc>=4&&pc<=18&&Number.isInteger(courts)&&courts>=1&&courts<=3&&num(hours)>0&&Number.isInteger(gpp)&&gpp>=1&&gpp<=12&&(type!=="Team vs Team"||pc%2===0)&&Number.isInteger(total)&&total<=maxUniqueGames(pc,type);}
 function pairPenalty(a,b,partner){return partner[a]?.[b]||0}
 function gamePenalty(a,b,partner,opponent){let s=0;for(const x of a)for(const y of b)s+=(opponent[x]?.[y]||0)*4;return s+a.reduce((v,x)=>v+pairPenalty(x,a[1-a.indexOf(x)],partner)*30,0)+b.reduce((v,x)=>v+pairPenalty(x,b[1-b.indexOf(x)],partner)*30,0)}
-function buildTeamSchedule(ids,target){
- const total=ids.length*target/2,maxPartnerUses=Math.max(1,(ids.length*(ids.length-1))/2);
- for(let attempt=0;attempt<80;attempt++){
-  const degree=Object.fromEntries(ids.map(id=>[id,0]));
-  const partner=Object.fromEntries(ids.map(id=>[id,{}]));
-  const pairs=[];
-  for(let step=0;step<total;step++){
-   const candidates=[];
-   for(let i=0;i<ids.length;i++)for(let j=i+1;j<ids.length;j++){
-    const a=ids[i],b=ids[j];if(degree[a]>=target||degree[b]>=target||(partner[a][b]||0)>=maxPartnerUses)continue;
-    candidates.push({a,b,score:(partner[a][b]||0)*10000+(degree[a]+degree[b])*30+Math.random()*5});
-   }
-   candidates.sort((a,b)=>a.score-b.score);if(!candidates.length)break;
-   const pick=candidates[0];pairs.push([pick.a,pick.b]);degree[pick.a]++;degree[pick.b]++;partner[pick.a][pick.b]=(partner[pick.a][pick.b]||0)+1;partner[pick.b][pick.a]=(partner[pick.b][pick.a]||0)+1;
+function buildTvTPartnerships(ids,target){
+  const total=ids.length*target/2;
+
+  const uniquePairs=[];
+  for(let i=0;i<ids.length;i++){
+    for(let j=i+1;j<ids.length;j++){
+      uniquePairs.push([ids[i],ids[j]]);
+    }
   }
-  if(pairs.length===total&&ids.every(id=>degree[id]===target))return pairs;
- }
- return null;
+
+  const uniqueCount=uniquePairs.length;
+
+  /*
+   * If there are fewer game-partnership instances than possible
+   * teammate pairs, select a balanced subset of unique pairs.
+   *
+   * Rule 2: no partnership repeats until the available unique
+   * partnership coverage has been exhausted.
+   *
+   * Rule 3: when exact coverage is mathematically impossible,
+   * distribute the shortfall as evenly as possible.
+   */
+  if(total<uniqueCount){
+    const selected=[];
+    const degree=Object.fromEntries(ids.map(id=>[id,0]));
+    const remaining=uniquePairs.slice();
+
+    function search(){
+      if(selected.length===total){
+        return ids.every(id=>degree[id]===target);
+      }
+
+      const slotsLeft=total-selected.length;
+
+      for(const id of ids){
+        if(degree[id]>target)return false;
+        if(degree[id]+slotsLeft<target)return false;
+      }
+
+      const candidates=remaining
+        .filter(([a,b])=>degree[a]<target&&degree[b]<target)
+        .map(pair=>({
+          pair,
+          score:
+            Math.max(degree[pair[0]],degree[pair[1]])*100+
+            (degree[pair[0]]+degree[pair[1]])*10+
+            Math.random()
+        }))
+        .sort((a,b)=>a.score-b.score);
+
+      for(const c of candidates){
+        const index=remaining.findIndex(
+          p=>pairKey(...p)===pairKey(...c.pair)
+        );
+
+        if(index<0)continue;
+
+        const [a,b]=remaining[index];
+        remaining.splice(index,1);
+        selected.push([a,b]);
+        degree[a]++;
+        degree[b]++;
+
+        if(search())return true;
+
+        degree[a]--;
+        degree[b]--;
+        selected.pop();
+        remaining.splice(index,0,[a,b]);
+      }
+
+      return false;
+    }
+
+    if(!search())return null;
+
+    return shuffle(selected);
+  }
+
+  /*
+   * Normal case: all unique partnerships appear once, then
+   * additional instances are distributed as evenly as possible.
+   */
+  const extra=total-uniqueCount;
+  const degree=Object.fromEntries(ids.map(id=>[id,0]));
+  const pairCount=new Map(
+    uniquePairs.map(([a,b])=>[pairKey(a,b),1])
+  );
+
+  for(const [a,b] of uniquePairs){
+    degree[a]++;
+    degree[b]++;
+  }
+
+  function search(left){
+    if(left===0)return ids.every(id=>degree[id]===target);
+
+    const candidates=[];
+
+    for(const [a,b] of uniquePairs){
+      const k=pairKey(a,b);
+      const count=pairCount.get(k)||0;
+
+      if(degree[a]>=target||degree[b]>=target)continue;
+
+      candidates.push({
+        a,b,k,
+        count,
+        score:
+          count*100+
+          (degree[a]+degree[b])*10+
+          Math.random()
+      });
+    }
+
+    candidates.sort((x,y)=>x.score-y.score);
+
+    for(const c of candidates){
+      pairCount.set(c.k,(pairCount.get(c.k)||0)+1);
+      degree[c.a]++;
+      degree[c.b]++;
+
+      if(search(left-1))return true;
+
+      degree[c.a]--;
+      degree[c.b]--;
+      pairCount.set(c.k,(pairCount.get(c.k)||0)-1);
+    }
+
+    return false;
+  }
+
+  if(!search(extra))return null;
+
+  const pairs=[];
+
+  for(const [a,b] of uniquePairs){
+    for(let n=0;n<pairCount.get(pairKey(a,b));n++){
+      pairs.push([a,b]);
+    }
+  }
+
+  return shuffle(pairs);
 }
+
+function validateTvTPartnerships(ids,pairs,target){
+  if(!pairs||pairs.length!==ids.length*target/2){
+    return {ok:false,reason:"wrong partnership count"};
+  }
+
+  const degree=Object.fromEntries(ids.map(id=>[id,0]));
+  const counts={};
+
+  for(const [a,b] of pairs){
+    if(!ids.includes(a)||!ids.includes(b)||a===b){
+      return {ok:false,reason:"invalid partnership"};
+    }
+
+    degree[a]++;
+    degree[b]++;
+
+    const k=pairKey(a,b);
+    counts[k]=(counts[k]||0)+1;
+  }
+
+  if(ids.some(id=>degree[id]!==target)){
+    return {
+      ok:false,
+      reason:"player appearance mismatch",
+      degree
+    };
+  }
+
+  const uniquePossible=ids.length*(ids.length-1)/2;
+  const covered=Object.keys(counts).length;
+
+  /*
+   * Rule 2/3 validation:
+   * If enough instances exist, every unique partnership must appear.
+   * If there are not enough instances, the selected partnerships
+   * must all be unique and the per-player shortfall must be balanced.
+   */
+  if(pairs.length>=uniquePossible){
+    if(covered!==uniquePossible){
+      return {
+        ok:false,
+        reason:"not every unique partnership appears"
+      };
+    }
+  }else{
+    if(covered!==pairs.length){
+      return {
+        ok:false,
+        reason:"partnership repeated before unique coverage"
+      };
+    }
+  }
+
+  const values=Object.values(counts);
+  const min=values.length?Math.min(...values):0;
+  const max=values.length?Math.max(...values):0;
+
+  return {
+    ok:true,
+    uniquePairs:covered,
+    possibleUniquePairs:uniquePossible,
+    totalInstances:pairs.length,
+    minRepeatCount:min,
+    maxRepeatCount:max,
+    balanced:max-min<=1,
+    counts
+  };
+}
+
+function buildTvTGames(sky,net,target){
+  const total=sky.length*target/2;
+  const n=sky.length;
+  const opponentAppearances=2*target;
+  const lower=Math.floor(opponentAppearances/n);
+  const upper=Math.ceil(opponentAppearances/n);
+
+  function solve(sp,np,maxNodes){
+    const skyInstances=sp.map((pair,index)=>({id:index,pair:pair.slice(),key:pairKey(...pair)}));
+    const netInstances=np.map((pair,index)=>({id:index,pair:pair.slice(),key:pairKey(...pair)}));
+    const counts=Object.fromEntries(sky.map(x=>[x,Object.fromEntries(net.map(y=>[y,0]))]));
+    const partnerOpp=Object.fromEntries(skyInstances.map(x=>[x.key,new Set()]));
+    const usedNet=new Set();
+    const assigned=new Map();
+    let nodes=0;
+
+    function candidateList(instance){
+      const out=[];
+      for(const ni of netInstances){
+        if(usedNet.has(ni.id))continue;
+        if(partnerOpp[instance.key].has(ni.key))continue;
+        let valid=true,pressure=0;
+        for(const x of instance.pair){
+          for(const y of ni.pair){
+            if(counts[x][y]>=upper){valid=false;break}
+            pressure+=(upper-counts[x][y]);
+          }
+          if(!valid)break;
+        }
+        if(valid)out.push({instance:ni,pressure});
+      }
+      out.sort((a,b)=>b.pressure-a.pressure);
+      return out;
+    }
+
+    function coverageFeasible(){
+      for(const x of sky){
+        let current=0,minimumDeficit=0,capacity=0;
+        for(const y of net){
+          const c=counts[x][y];
+          if(c>upper)return false;
+          current+=c;
+          if(c<lower)minimumDeficit+=lower-c;
+          capacity+=upper-c;
+        }
+        const remaining=skyInstances.filter(v=>!assigned.has(v.id)&&v.pair.includes(x)).length*2;
+        if(minimumDeficit>remaining)return false;
+        if(remaining>capacity)return false;
+        if(current+remaining<opponentAppearances)return false;
+      }
+
+      for(const y of net){
+        let current=0,minimumDeficit=0,capacity=0;
+        for(const x of sky){
+          const c=counts[x][y];
+          if(c>upper)return false;
+          current+=c;
+          if(c<lower)minimumDeficit+=lower-c;
+          capacity+=upper-c;
+        }
+        const remaining=netInstances.filter(v=>!usedNet.has(v.id)&&v.pair.includes(y)).length*2;
+        if(minimumDeficit>remaining)return false;
+        if(remaining>capacity)return false;
+        if(current+remaining<opponentAppearances)return false;
+      }
+      return true;
+    }
+
+    function chooseNext(){
+      let best=null,bestCandidates=null;
+      for(const si of skyInstances){
+        if(assigned.has(si.id))continue;
+        const candidates=candidateList(si);
+        if(!candidates.length)return null;
+        if(!best||candidates.length<bestCandidates.length){
+          best=si;
+          bestCandidates=candidates;
+          if(candidates.length===1)break;
+        }
+      }
+      return {instance:best,candidates:bestCandidates};
+    }
+
+    function search(){
+      if(++nodes>maxNodes)return null;
+
+      if(assigned.size===skyInstances.length){
+        for(const x of sky){
+          for(const y of net){
+            if(counts[x][y]<lower||counts[x][y]>upper)return null;
+          }
+        }
+        return true;
+      }
+
+      const choice=chooseNext();
+      if(!choice)return null;
+
+      for(const option of choice.candidates){
+        if(nodes>maxNodes)return null;
+        const si=choice.instance,ni=option.instance;
+
+        assigned.set(si.id,ni.id);
+        usedNet.add(ni.id);
+        partnerOpp[si.key].add(ni.key);
+
+        for(const x of si.pair)for(const y of ni.pair)counts[x][y]++;
+
+        if(coverageFeasible()&&search())return true;
+
+        for(const x of si.pair)for(const y of ni.pair)counts[x][y]--;
+        partnerOpp[si.key].delete(ni.key);
+        usedNet.delete(ni.id);
+        assigned.delete(si.id);
+      }
+      return null;
+    }
+
+    if(!search())return null;
+    return skyInstances.map(si=>{
+      const ni=netInstances[assigned.get(si.id)];
+      return {a:si.pair.slice(),b:ni.pair.slice()};
+    });
+  }
+
+  for(let attempt=0;attempt<100;attempt++){
+    const sp=buildTvTPartnerships(shuffle(sky),target);
+    const np=buildTvTPartnerships(shuffle(net),target);
+    if(!sp||!np)continue;
+
+    const games=solve(sp,np,300000);
+    if(!games||games.length!==total)continue;
+
+    const validation=validateTvTGames(sky,net,games,target);
+    if(!validation.ok)continue;
+
+    let rule4=true;
+    for(const x of sky){
+      const values=net.map(y=>validation.opponentCounts[x][y]||0);
+      if(values.some(v=>v<lower||v>upper)||Math.max(...values)-Math.min(...values)>1){
+        rule4=false;break;
+      }
+    }
+    if(rule4)for(const y of net){
+      const values=sky.map(x=>validation.opponentCounts[y][x]||0);
+      if(values.some(v=>v<lower||v>upper)||Math.max(...values)-Math.min(...values)>1){
+        rule4=false;break;
+      }
+    }
+
+    if(rule4)return {games,validation};
+  }
+  return null;
+}
+function validateTvTGames(sky,net,games,target){
+  if(!games||games.length!==sky.length*target/2){
+    return {ok:false,reason:"wrong game count"};
+  }
+
+  const all=new Set([...sky,...net]);
+  const appearance=Object.fromEntries([...all].map(id=>[id,0]));
+  const used=new Set();
+  const partnerCounts={};
+  const opponentCounts={};
+  const repeatOppViolations=[];
+
+  for(const id of all){
+    partnerCounts[id]={};
+    opponentCounts[id]={};
+  }
+
+  for(const g of games){
+    if(g.a.length!==2||g.b.length!==2)return {ok:false,reason:"not 2v2"};
+
+    if(!g.a.every(id=>sky.includes(id))||!g.b.every(id=>net.includes(id))){
+      return {ok:false,reason:"team-side violation"};
+    }
+
+    const key=gameKey(...g.a,...g.b);
+    if(used.has(key))return {ok:false,reason:"duplicate complete game"};
+    used.add(key);
+
+    for(const id of [...g.a,...g.b])appearance[id]++;
+
+    for(const side of [g.a,g.b]){
+      const k=pairKey(...side);
+      partnerCounts[side[0]][k]=(partnerCounts[side[0]][k]||0)+1;
+      partnerCounts[side[1]][k]=(partnerCounts[side[1]][k]||0)+1;
+    }
+
+    for(const x of g.a)for(const y of g.b){
+      opponentCounts[x][y]=(opponentCounts[x][y]||0)+1;
+      opponentCounts[y][x]=(opponentCounts[y][x]||0)+1;
+    }
+  }
+
+  if([...all].some(id=>appearance[id]!==target)){
+    return {ok:false,reason:"player game count mismatch",appearance};
+  }
+
+  for(const team of [sky,net]){
+    for(const a of team){
+      for(const b of team){
+        if(a>=b)continue;
+        const count=partnerCounts[a][pairKey(a,b)]||0;
+        if(count<1)return {ok:false,reason:"missing unique partnership"};
+      }
+    }
+  }
+
+  for(const team of [sky,net]){
+    for(const a of team){
+      const values=[];
+      for(const b of team){
+        if(a===b)continue;
+        values.push(partnerCounts[a][pairKey(a,b)]||0);
+      }
+      if(Math.max(...values)-Math.min(...values)>1){
+        return {ok:false,reason:"partnership distribution differs by more than 1",player:a,values};
+      }
+    }
+  }
+
+  for(const g of games){
+    const k=pairKey(...g.a);
+    const opponentPair=[...g.b].sort().join("|");
+    const previous=games.slice(0,games.indexOf(g))
+      .filter(x=>pairKey(...x.a)===k)
+      .some(x=>[...x.b].sort().join("|")===opponentPair);
+
+    if(previous){
+      repeatOppViolations.push({
+        partnership:k,
+        opponentPair
+      });
+    }
+  }
+
+  if(repeatOppViolations.length){
+    return {ok:false,reason:"Rule 5 repeated partnership faced same opponent pair",repeatOppViolations};
+  }
+
+  return {
+    ok:true,
+    appearances:appearance,
+    partnerCounts,
+    opponentCounts,
+    duplicateGames:0,
+    rule5Violations:0
+  };
+}
+
 function maxDisjointPack(games,target){
   if(!games.length||target<=0)return 0;
   const limit=Math.min(target,3),masks=games.map(g=>new Set([...g.a,...g.b]));
@@ -120,25 +567,30 @@ function buildRoundRobinSchedule(players,target,courts=1){
   return best.games.length===total&&best.pack>=desiredCourts?best.games:null;
 }
 function buildSchedule(t){
-  const total=calcGames(t.playerCount,t.gamesPerPlayer);let raw=null;
+  const total=calcGames(t.playerCount,t.gamesPerPlayer);
+  let raw=null;
+
   if(t.type==="Team vs Team"){
-    const sky=t.teams.sky,net=t.teams.net;
-    for(let attempt=0;attempt<80&&!raw;attempt++){
-      const sp=buildTeamSchedule(shuffle(sky),t.gamesPerPlayer),np=buildTeamSchedule(shuffle(net),t.gamesPerPlayer);if(!sp||!np)continue;
-      const partner=Object.fromEntries(t.players.map(p=>[p.id,{}])),opp=Object.fromEntries(t.players.map(p=>[p.id,{}]));
-      raw=[];const remaining=shuffle(np),usedGames=new Set();
-      for(const a of sp){let best=-Infinity,bi=-1;for(let i=0;i<remaining.length;i++){const b=remaining[i],key=gameKey(...a,...b);if(usedGames.has(key))continue;let score=0;for(const x of a)for(const y of b)score-=(opp[x][y]||0)*100;score+=Math.random()*10;if(score>best){best=score;bi=i}}if(bi<0){raw=null;break}const b=remaining.splice(bi,1)[0];usedGames.add(gameKey(...a,...b));raw.push({a:a.slice(),b:b.slice()});for(const x of a)for(const y of b){opp[x][y]=(opp[x][y]||0)+1;opp[y][x]=(opp[y][x]||0)+1}}
-      if(!raw||raw.length!==total||maxDisjointPack(raw,Math.min(t.courts,Math.floor(t.playerCount/4)))<Math.min(t.courts,Math.floor(t.playerCount/4)))raw=null;
-    }
-  }else raw=buildRoundRobinSchedule(t.players,t.gamesPerPlayer,t.courts);
+    const result=buildTvTGames(t.teams.sky,t.teams.net,t.gamesPerPlayer);
+    raw=result?.games||null;
+
+    if(!raw||raw.length!==total)raw=null;
+
+    const desiredCourts=Math.min(t.courts,Math.floor(t.playerCount/4));
+    if(raw&&maxDisjointPack(raw,desiredCourts)<desiredCourts)raw=null;
+  }else{
+    raw=buildRoundRobinSchedule(t.players,t.gamesPerPlayer,t.courts);
+  }
+
   return raw;
 }
+
 function playerMap(t){return Object.fromEntries(t.players.map(p=>[p.id,p]));}
 function liveIds(t){return new Set(t.games.filter(g=>g.status==="live").flatMap(g=>[...g.a,...g.b]));}
 function availableIds(t){return new Set(t.players.filter(p=>p.present===true).map(p=>p.id));}
-function candidatePool(t,occupied=new Set()){
+function candidatePool(t,occupied=new Set(),court=null){const restNext=t.fairness?.restNext||{};
   const avail=availableIds(t),live=liveIds(t),out=[];
-  for(let i=0;i<t.games.length;i++){const g=t.games[i];if(g.status!=="queued")continue;const ids=[...g.a,...g.b];if(ids.some(id=>!avail.has(id)||live.has(id)||occupied.has(id)))continue;out.push(i)}return out;
+  for(let i=0;i<t.games.length;i++){const g=t.games[i];if(g.status!=="queued")continue;const ids=[...g.a,...g.b];if(ids.some(id=>!avail.has(id)||live.has(id)||occupied.has(id)))continue;out.push(i)}if(!out.length)return out;const restId=court!==null?restNext[String(court)]:null;const restSafe=restId?out.filter(i=>![...t.games[i].a,...t.games[i].b].includes(restId)):out;const restPool=restSafe.length?restSafe:out;const noTwoGames=restPool.filter(i=>![...t.games[i].a,...t.games[i].b].some(id=>(t.playerState[id]?.consecutiveGames||0)>=2));const pool=noTwoGames.length?noTwoGames:restPool;const noTwoRest=pool.filter(i=>![...t.games[i].a,...t.games[i].b].some(id=>(t.playerState[id]?.gamesSinceRest||0)>=2));return noTwoRest.length?noTwoRest:pool;
 }
 function restScore(t,g){
   const now=Date.now();let score=0;
@@ -159,17 +611,17 @@ function assignInitialCourts(t){
   const selected=selectDisjointGames(t,max);
   return selected.map((idx,c)=>{const g=t.games[idx];g.status="live";g.court=c+1;g.startedAt=Date.now();return g});
 }
-function refillCourts(t){const occupied=liveIds(t),empty=[];for(let c=1;c<=t.courts;c++)if(!t.games.some(g=>g.status==="live"&&g.court===c))empty.push(c);if(!empty.length)return [];const candidates=candidatePool(t,occupied);if(!candidates.length)return [];const ordered=candidates.slice().sort((a,b)=>candidateScore(t,t.games[a])-candidateScore(t,t.games[b]));let best=[];for(let target=Math.min(empty.length,ordered.length);target>0&&!best.length;target--){function find(start,used,chosen){if(chosen.length===target){best=chosen.slice();return true}for(let i=start;i<ordered.length;i++){const idx=ordered[i],g=t.games[idx],ids=[...g.a,...g.b];if(ids.some(id=>used.has(id)))continue;chosen.push(idx);ids.forEach(id=>used.add(id));if(find(i+1,used,chosen))return true;ids.forEach(id=>used.delete(id));chosen.pop()}return false}find(0,new Set(occupied),[])}const out=[];for(let i=0;i<best.length;i++){const g=t.games[best[i]];g.status="live";g.court=empty[i];g.startedAt=Date.now();out.push(g)}return out} function promote(t,court){const before=new Set(t.games.filter(g=>g.status==="live").map(g=>g.id));const filled=refillCourts(t);return filled.find(g=>g.court===court)||filled.find(g=>!before.has(g.id))||null}
+function refillCourts(t){const occupied=liveIds(t),empty=[];for(let c=1;c<=t.courts;c++)if(!t.games.some(g=>g.status==="live"&&g.court===c))empty.push(c);if(!empty.length)return [];const restNext=t.fairness?.restNext||{};const candidatesByCourt=empty.map(c=>({court:c,preferred:candidatePool(t,occupied,c),fallback:candidatePool(t,occupied,null)}));if(candidatesByCourt.every(x=>!x.preferred.length&&!x.fallback.length))return [];let best=[];function find(pos,used,chosen){if(pos===candidatesByCourt.length){best=chosen.slice();return true}const item=candidatesByCourt[pos],pool=item.preferred.length?item.preferred:item.fallback;const ordered=pool.slice().sort((a,b)=>candidateScore(t,t.games[a])-candidateScore(t,t.games[b]));for(const idx of ordered){const g=t.games[idx],ids=[...g.a,...g.b];if(ids.some(id=>used.has(id)))continue;chosen.push({idx,court:item.court});ids.forEach(id=>used.add(id));if(find(pos+1,used,chosen))return true;ids.forEach(id=>used.delete(id));chosen.pop()}return false}for(let target=empty.length;target>0&&!best.length;target--){const subset=candidatesByCourt.slice(0,target);function findSubset(pos,used,chosen){if(pos===subset.length){best=chosen.slice();return true}const item=subset[pos],pool=item.preferred.length?item.preferred:item.fallback,ordered=pool.slice().sort((a,b)=>candidateScore(t,t.games[a])-candidateScore(t,t.games[b]));for(const idx of ordered){const g=t.games[idx],ids=[...g.a,...g.b];if(ids.some(id=>used.has(id)))continue;chosen.push({idx,court:item.court});ids.forEach(id=>used.add(id));if(findSubset(pos+1,used,chosen))return true;ids.forEach(id=>used.delete(id));chosen.pop()}return false}findSubset(0,new Set(occupied),[])}const out=[];for(const item of best){const g=t.games[item.idx];g.status="live";g.court=item.court;g.startedAt=Date.now();out.push(g)}return out} function promote(t,court){const before=new Set(t.games.filter(g=>g.status==="live").map(g=>g.id));const filled=refillCourts(t);return filled.find(g=>g.court===court)||filled.find(g=>!before.has(g.id))||null}
 function nextCandidates(t,count=6){const occupied=liveIds(t),empty=[];for(let c=1;c<=t.courts;c++)if(!t.games.some(g=>g.status==="live"&&g.court===c))empty.push(c);if(!empty.length)return [];const candidates=candidatePool(t,occupied);if(!candidates.length)return [];const ordered=candidates.slice().sort((a,b)=>candidateScore(t,t.games[a])-candidateScore(t,t.games[b]));let best=[];function dfs(start,used,chosen){if(chosen.length===empty.length||chosen.length===count){best=chosen.slice();return true}for(let i=start;i<ordered.length;i++){const idx=ordered[i],g=t.games[idx],ids=[...g.a,...g.b];if(ids.some(id=>used.has(id)))continue;chosen.push(idx);ids.forEach(id=>used.add(id));if(dfs(i+1,used,chosen))return true;ids.forEach(id=>used.delete(id));chosen.pop()}return false}dfs(0,new Set(occupied),[]);return best.map(i=>t.games[i]).slice(0,count)}
-function updateHistory(t,g){const now=Date.now();const playing=new Set([...g.a,...g.b]);for(const p of t.players){const ps=t.playerState[p.id]??={lastPlayed:0,gamesSinceRest:0,partnerCounts:{},opponentCounts:{}};if(p.present===true&&!playing.has(p.id))ps.gamesSinceRest=(ps.gamesSinceRest||0)+1;}for(const id of playing){const ps=t.playerState[id]??={lastPlayed:0,gamesSinceRest:0,partnerCounts:{},opponentCounts:{}};ps.lastPlayed=now;ps.gamesSinceRest=0;const side=g.a.includes(id)?g.a:g.b;const partner=side.find(x=>x!==id);if(partner)ps.partnerCounts[partner]=(ps.partnerCounts[partner]||0)+1;const opponents=g.a.includes(id)?g.b:g.a;for(const op of opponents)ps.opponentCounts[op]=(ps.opponentCounts[op]||0)+1}}
-function finishLeagueGame(id,s1,s2){const t=state.tournament,g=t.games.find(x=>x.id===id);if(!g||g.status!=="live")return;g.score=[s1,s2];g.status="done";g.finishedAt=Date.now();g.winner=s1>s2?0:1;updateHistory(t,g);g.court=null;refillCourts(t);save();render();}
+function updateHistory(t,g){const now=Date.now();const playing=new Set([...g.a,...g.b]);for(const p of t.players){const ps=t.playerState[p.id]??={lastPlayed:0,gamesSinceRest:0,consecutiveGames:0,partnerCounts:{},opponentCounts:{}};if(p.present===true&&!playing.has(p.id)){ps.gamesSinceRest=(ps.gamesSinceRest||0)+1;ps.consecutiveGames=0;}}for(const id of playing){const ps=t.playerState[id]??={lastPlayed:0,gamesSinceRest:0,consecutiveGames:0,partnerCounts:{},opponentCounts:{}};ps.lastPlayed=now;ps.gamesSinceRest=0;ps.consecutiveGames=(ps.consecutiveGames||0)+1;const side=g.a.includes(id)?g.a:g.b;const partner=side.find(x=>x!==id);if(partner)ps.partnerCounts[partner]=(ps.partnerCounts[partner]||0)+1;const opponents=g.a.includes(id)?g.b:g.a;for(const op of opponents)ps.opponentCounts[op]=(ps.opponentCounts[op]||0)+1}}
+function restNextPlayer(court,id){const t=state.tournament;if(!t||!state.canScore)return;if(!t.fairness)t.fairness={restNext:{}};if(!t.fairness.restNext)t.fairness.restNext={};t.fairness.restNext[String(court)]=id;save();render()}function finishLeagueGame(id,s1,s2){const t=state.tournament,g=t.games.find(x=>x.id===id);if(!g||g.status!=="live")return;const court=g.court,restId=t.fairness?.restNext?.[String(court)]||null;g.score=[s1,s2];g.status="done";g.finishedAt=Date.now();g.winner=s1>s2?0:1;updateHistory(t,g);g.court=null;refillCourts(t,court,restId);if(t.fairness?.restNext)delete t.fairness.restNext[String(court)];save();render();}
 function rankings(t){const r=Object.fromEntries(t.players.map(p=>[p.id,{id:p.id,name:p.name,team:p.team,gp:0,w:0,l:0,wp:0,pf:0,pa:0,pd:0}]));for(const g of t.games.filter(x=>x.status==="done"&&x.score)){const [a,b]=g.score;for(const id of g.a){r[id].gp++;r[id].pf+=a;r[id].pa+=b;r[id].pd+=a-b}for(const id of g.b){r[id].gp++;r[id].pf+=b;r[id].pa+=a;r[id].pd+=b-a}if(a>b){g.a.forEach(id=>r[id].w++);g.b.forEach(id=>r[id].l++)}else{g.b.forEach(id=>r[id].w++);g.a.forEach(id=>r[id].l++)}}
   return Object.values(r).map(x=>({...x,wp:x.gp?x.w/x.gp:0})).sort((a,b)=>b.w-a.w||b.wp-a.wp||b.pd-a.pd||b.pf-a.pf||a.name.localeCompare(b.name)).map((x,i)=>({...x,rank:i+1}));
 }
 function leagueComplete(t){return t.games.length>0&&t.games.every(g=>g.status==="done")}
 function fixture(g,t){const p=playerMap(t);return `<span class="player-name">${g.a.map(id=>esc(p[id]?.name||id)).join(" + ")}</span> <span class="muted">VS</span> <span class="player-name">${g.b.map(id=>esc(p[id]?.name||id)).join(" + ")}</span>`}
 function save(){if(state.tournament){localStorage.setItem(KEY,JSON.stringify(state.tournament));syncTournament()}}
-function load(){try{state.tournament=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem(OLD_KEY)||"null");if(state.tournament&&!state.tournament.playerState){state.tournament.playerState=Object.fromEntries(state.tournament.players.map(p=>[p.id,{lastPlayed:0,gamesSinceRest:0,partnerCounts:{},opponentCounts:{}}]));localStorage.setItem(KEY,JSON.stringify(state.tournament))}}catch{state.tournament=null}}
+function load(){try{state.tournament=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem(OLD_KEY)||"null");if(state.tournament&&!state.tournament.playerState){state.tournament.playerState=Object.fromEntries(state.tournament.players.map(p=>[p.id,{lastPlayed:0,gamesSinceRest:0,consecutiveGames:0,partnerCounts:{},opponentCounts:{}}]));localStorage.setItem(KEY,JSON.stringify(state.tournament))}}catch{state.tournament=null}}
 function encodeBoard(t){return btoa(unescape(encodeURIComponent(JSON.stringify(t))))}
 function decodeBoard(raw){try{return JSON.parse(decodeURIComponent(escape(atob(raw))))}catch{return null}}
 const PUBLIC_BOARD_BASE="https://nightshade248.github.io/Shuttle-Syndicate/";
@@ -192,7 +644,7 @@ function generate(){
  }else{
   players=[...document.querySelectorAll(".rr-input")].map((x,i)=>({id:"P"+String(i+1).padStart(2,"0"),name:x.value.trim()||`Player ${i+1}`,team:null,present:false}));
  }
- const t={id:uid(),type,playerCount:pc,courts,hours,gamesPerPlayer:gpp,players,teams:type==="Team vs Team"?{sky:players.filter(p=>p.team==="sky").map(p=>p.id),net:players.filter(p=>p.team==="net").map(p=>p.id)}:null,createdAt:Date.now(),matchPlanMinutes:12,started:false,games:[],playerState:Object.fromEntries(players.map(p=>[p.id,{lastPlayed:0,gamesSinceRest:0,partnerCounts:{},opponentCounts:{}}])),playoff:{}};
+ const t={id:uid(),type,playerCount:pc,courts,hours,gamesPerPlayer:gpp,players,teams:type==="Team vs Team"?{sky:players.filter(p=>p.team==="sky").map(p=>p.id),net:players.filter(p=>p.team==="net").map(p=>p.id)}:null,createdAt:Date.now(),matchPlanMinutes:12,started:false,games:[],playerState:Object.fromEntries(players.map(p=>[p.id,{lastPlayed:0,gamesSinceRest:0,consecutiveGames:0,partnerCounts:{},opponentCounts:{}}])),playoff:{},fairness:{restNext:{}}};
  const raw=buildSchedule(t);
  if(!raw||raw.length!==calcGames(pc,gpp)){alert("The engine could not produce a unique equal schedule for this configuration. Reduce games/player or choose another player count.");return}
  t.games=raw.map((g,i)=>({...g,id:"G"+String(i+1).padStart(2,"0"),status:"queued",court:null,score:null}));
@@ -215,8 +667,7 @@ function livePage(t){
  const deck=onDeck.length?onDeck.map(g=>`<div class="next-item"><div class="next-label">${g.id}</div><div class="fixture">${fixture(g,t)}</div></div>`).join(""):'<div class="muted small">No additional eligible candidates.</div>';
  return `<section class="hero page-hero"><div class="eyebrow">LIVE</div><h1>LEAGUE IN PROGRESS</h1><div class="meta-row"><span>${done}/${t.games.length} completed</span><span>${live.length}/${t.courts} courts active</span><span>${t.players.filter(p=>p.present===true).length}/${t.playerCount} available</span></div></section><section class="live-grid">${courts}</section><section class="card compact-section"><div class="section-head"><div><div class="eyebrow">PLAYER AVAILABILITY</div><h2>Check-in status</h2></div><span class="small muted">Unavailable players are excluded from future games.</span></div><div class="check-grid">${t.players.map(p=>{const busy=live.some(g=>[...g.a,...g.b].includes(p.id));return `<label class="check-card"><input type="checkbox" data-present="${p.id}" ${p.present===true?"checked":""} ${busy?"disabled":""}><span>${esc(p.name)}</span><small>${busy?"Playing now":(p.present!==false?"Available":"Unavailable")}</small></label>`}).join("")}</div></section><section class="card next-section"><div class="section-head"><div><div class="eyebrow">FLOW</div><h2>NEXT</h2></div><span class="small muted">Dynamic candidate selection</span></div><div class="next-list">${next}</div><div class="eyebrow deck-title">ON DECK</div><div class="next-list">${deck}</div></section>`;
 }
-function courtCard(t,g){const scoreA=g.score?.[0]??"",scoreB=g.score?.[1]??"";const scoreUI=state.canScore?`<div class="score-row"><div class="score-box sky"><div class="score-label">SIDE A</div><input inputmode="numeric" pattern="[0-9]*" value="" id="s1-${g.id}"></div><div class="vs">â€”</div><div class="score-box net"><div class="score-label">SIDE B</div><input inputmode="numeric" pattern="[0-9]*" value="" id="s2-${g.id}"></div></div><button class="btn good wide" onclick="submitScore('${g.id}')">CONFIRM SCORE</button>`:`<div class="score-row"><div class="score-box sky"><div class="score-label">SIDE A</div><div class="score-display">${scoreA||"â€”"}</div></div><div class="vs">â€”</div><div class="score-box net"><div class="score-label">SIDE B</div><div class="score-display">${scoreB||"â€”"}</div></div></div>`;return `<div class="court"><div class="court-head"><div><span class="live-dot"></span><b>COURT ${g.court}</b></div><span class="small">NOW Â· ${g.id}</span></div><div class="live-matchup"><div class="live-side pair">${g.a.map(id=>esc(playerMap(t)[id]?.name||id)).join(" + ")}</div><div class="vs">VS</div><div class="live-side pair">${g.b.map(id=>esc(playerMap(t)[id]?.name||id)).join(" + ")}</div></div>${scoreUI}</div>`}
-window.submitScore=id=>{const a=num($("#s1-"+id)?.value,-1),b=num($("#s2-"+id)?.value,-1);if(a<0||b<0||a===b){alert("Enter two different non-negative scores.");return}if(!confirm(`Confirm ${a} - ${b} for ${id}?`))return;finishLeagueGame(id,a,b)};
+function courtCard(t,g){const p=playerMap(t),scoreA=g.score?.[0]??"",scoreB=g.score?.[1]??"",restId=t.fairness?.restNext?.[String(g.court)]||"";const scoreUI=state.canScore?`<div class="score-row"><div class="score-box sky"><div class="score-label">SIDE A</div><input inputmode="numeric" pattern="[0-9]*" value="" id="s1-${g.id}"></div><div class="vs">—</div><div class="score-box net"><div class="score-label">SIDE B</div><input inputmode="numeric" pattern="[0-9]*" value="" id="s2-${g.id}"></div></div><button class="btn good wide" onclick="submitScore('${g.id}')">CONFIRM SCORE</button>`:`<div class="score-row"><div class="score-box sky"><div class="score-label">SIDE A</div><div class="score-display">${scoreA||"—"}</div></div><div class="vs">—</div><div class="score-box net"><div class="score-label">SIDE B</div><div class="score-display">${scoreB||"—"}</div></div></div>`;const restUI=state.canScore?`<div class="row" style="margin-top:10px;align-items:center"><span class="small muted">REST PLAYER</span>${[...g.a,...g.b].map(id=>`<button class="btn tiny" onclick="restNextPlayer('${g.court}','${id}')">${esc(p[id]?.name||id)}${restId===id?" · REST":""}</button>`).join("")}</div>`:"";return `<div class="court"><div class="court-head"><div><span class="live-dot"></span><b>COURT ${g.court}</b></div><span class="small">NOW · ${g.id}</span></div><div class="live-matchup"><div class="live-side pair">${g.a.map(id=>esc(p[id]?.name||id)).join(" + ")}</div><div class="vs">VS</div><div class="live-side pair">${g.b.map(id=>esc(p[id]?.name||id)).join(" + ")}</div></div>${scoreUI}${restUI}</div>`}window.submitScore=id=>{const a=num($("#s1-"+id)?.value,-1),b=num($("#s2-"+id)?.value,-1);if(a<0||b<0||a===b){alert("Enter two different non-negative scores.");return}if(!confirm(`Confirm ${a} - ${b} for ${id}?`))return;finishLeagueGame(id,a,b)};
 function schedulePage(t){const selected=state.playerFilter||"ALL",gs=t.games.filter(g=>selected==="ALL"||[...g.a,...g.b].includes(selected)),r=rankings(t);return `<section class="hero page-hero"><div class="eyebrow">SCHEDULE / RANKING</div><h1>SCHEDULE / RANKING</h1><div class="filter"><select class="field" id="playerFilter"><option value="ALL" ${selected==="ALL"?"selected":""}>ALL â€” ENTIRE SCHEDULE</option>${t.players.map(p=>`<option value="${p.id}" ${selected===p.id?"selected":""}>${esc(p.name)}</option>`).join("")}</select><span class="small muted">Live court order may change dynamically.</span></div></section><section class="card compact-section"><div class="section-head"><h2>${selected==="ALL"?"Entire Schedule":esc(playerMap(t)[selected]?.name||"Player")+"'s Fixtures"}</h2><span class="small muted">${gs.length} fixture(s)</span></div><div class="schedule-list">${gs.map(g=>scheduleRow(t,g)).join("")}</div></section>${rankingBoard(t,r)}`}
 function scheduleRow(t,g){const result=g.score?`${g.score[0]} â€” ${g.score[1]}`:"";return `<div class="game-row ${g.status}"><div><b>${g.id}</b><div class="small muted">${g.court?"C"+g.court:"â€”"}</div></div><div class="fixture">${fixture(g,t)}${result?`<div class="score-result">${result}</div>`:""}</div><span class="status ${g.status}">${g.status==="done"?"COMPLETED":g.status==="live"?"LIVE":"UPCOMING"}</span>${state.canScore&&g.status==="done"?`<button class="btn tiny" onclick="editLeagueScore('${g.id}')">EDIT SCORE</button>`:""}</div>`}
 window.editLeagueScore=id=>{const t=state.tournament,g=t.games.find(x=>x.id===id);if(!g?.score)return;const a=prompt(`Edit ${id} â€” Side A score`,g.score[0]);if(a===null)return;const b=prompt(`Edit ${id} â€” Side B score`,g.score[1]);if(b===null)return;const s1=num(a,-1),s2=num(b,-1);if(s1<0||s2<0||s1===s2){alert("Enter two different non-negative scores.");return}g.score=[s1,s2];g.winner=s1>s2?0:1;t.playoff={};save();render()};
