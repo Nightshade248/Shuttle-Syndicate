@@ -1,4 +1,4 @@
-const APP_VERSION="V1.4.7";
+const APP_VERSION="V1.4.8";
 const KEY="ss_v143_tournament";const OLD_KEY="ss_v142_tournament";
 const safeSession=window.sessionStorage||{getItem(){return ""},setItem(){}};
 const state={page:"admin",tournament:null,adminDraft:null,generatedLink:"",shared:false,canScore:false,adminKey:safeSession.getItem("ss_v145_admin_key")||(()=>{const k="SS-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);safeSession.setItem("ss_v145_admin_key",k);return k})(),realtime:{client:null,channel:null,enabled:false,loading:false}};
@@ -527,46 +527,166 @@ function selectDisjointGames(t,count){
   return dfs(0,new Set())?chosen.slice():[];
 }
 function buildRoundRobinSchedule(players,target,courts=1){
-  const ids=players.map(p=>p.id),total=calcGames(ids.length,target),desiredCourts=Math.min(courts,Math.floor(ids.length/4));
-  let best={games:[],score:Infinity,pack:0};
-  for(let attempt=0;attempt<160;attempt++){
-    const remaining=Object.fromEntries(ids.map(id=>[id,target]));
-    const partner=Object.fromEntries(ids.map(id=>[id,{}])),opp=Object.fromEntries(ids.map(id=>[id,{}])),used=new Set(),games=[];
+  const ids=players.map(p=>p.id),n=ids.length;
+  const desiredCourts=Math.min(courts,Math.floor(n/4));
+  const totalGames=Math.floor((n*target)/4);
+  const totalAppearances=totalGames*4;
+  if(totalGames<1||desiredCourts<1)return null;
+
+  const gameIdentity=(a,b)=>[...a,...b].slice().sort().join("|");
+
+  let best=null,bestScore=Infinity;
+
+  for(let attempt=0;attempt<300;attempt++){
+    const order=shuffle(ids);
+    const base=Math.floor(totalAppearances/n);
+    const extra=totalAppearances%n;
+    const desired=Object.fromEntries(ids.map(id=>[id,base]));
+    order.slice(0,extra).forEach(id=>desired[id]++);
+
+    const remaining={...desired};
+    const partner=Object.fromEntries(ids.map(id=>[id,{}]));
+    const opp=Object.fromEntries(ids.map(id=>[id,{}]));
+    const oppPair=Object.fromEntries(ids.map(id=>[id,{}]));
+    const used=new Set();
+    const games=[];
     let failed=false;
-    for(let step=0;step<total;step++){
-      let pick=null;
-      for(let tries=0;tries<220&&!pick;tries++){
-        const eligible=shuffle(ids.filter(id=>remaining[id]>0)).sort((a,b)=>remaining[b]-remaining[a]||Math.random()-.5);
-        if(eligible.length<4)break;
-        const q=eligible.slice(0,Math.min(8,eligible.length)).sort((a,b)=>remaining[b]-remaining[a]||Math.random()-.5).slice(0,4);
-        if(new Set(q).size!==4)continue;
-        const splits=[[[q[0],q[1]],[q[2],q[3]]],[[q[0],q[2]],[q[1],q[3]]],[[q[0],q[3]],[q[1],q[2]]]];
-        const choices=[];
-        for(const [a,b] of splits){
-          const key=gameKey(...a,...b);if(used.has(key))continue;
-          const repeatPartner=(partner[a[0]][a[1]]||0)+(partner[b[0]][b[1]]||0);
-          const repeatOpp=a.reduce((sum,x)=>sum+b.reduce((z,y)=>z+(opp[x][y]||0),0),0);
-          const balance=q.reduce((sum,id)=>sum+remaining[id],0);
-          choices.push({a,b,score:repeatPartner*10000+repeatOpp*100+balance*2+Math.random()*10});
+
+    for(let step=0;step<totalGames;step++){
+      const active=ids.filter(id=>remaining[id]>0);
+      if(active.length<4){failed=true;break}
+
+      const candidates=[];
+
+      for(let i=0;i<active.length-3;i++){
+        for(let j=i+1;j<active.length-2;j++){
+          for(let k=j+1;k<active.length-1;k++){
+            for(let l=k+1;l<active.length;l++){
+              const q=[active[i],active[j],active[k],active[l]];
+              const gameId=gameIdentity(q,[]);
+              if(used.has(gameId))continue;
+
+              const splits=[
+                [[q[0],q[1]],[q[2],q[3]]],
+                [[q[0],q[2]],[q[1],q[3]]],
+                [[q[0],q[3]],[q[1],q[2]]]
+              ];
+
+              for(const [a,b] of splits){
+                let partnerRepeats=0;
+                for(const side of [a,b]){
+                  partnerRepeats+=partner[side[0]][side[1]]||0;
+                }
+
+                let opponentPairRepeats=0;
+                const aPair=pairKey(...a),bPair=pairKey(...b);
+                for(const x of a)opponentPairRepeats+=oppPair[x][bPair]||0;
+                for(const x of b)opponentPairRepeats+=oppPair[x][aPair]||0;
+
+                let opponentImbalance=0;
+                for(const x of a){
+                  const counts=Object.values(opp[x]);
+                  const min=counts.length?Math.min(...counts):0;
+                  for(const y of b)opponentImbalance+=Math.max(0,(opp[x][y]||0)+1-min);
+                }
+                for(const x of b){
+                  const counts=Object.values(opp[x]);
+                  const min=counts.length?Math.min(...counts):0;
+                  for(const y of a)opponentImbalance+=Math.max(0,(opp[x][y]||0)+1-min);
+                }
+
+                const remainingScore=q.reduce((sum,id)=>sum+remaining[id],0);
+                const lastAppearance=q.reduce((sum,id)=>sum+(remaining[id]===1?1:0),0);
+
+                candidates.push({
+                  a,b,
+                  partnerRepeats,
+                  opponentPairRepeats,
+                  opponentImbalance,
+                  lastAppearance,
+                  remainingScore
+                });
+              }
+            }
+          }
         }
-        if(choices.length){choices.sort((a,b)=>a.score-b.score);pick=choices[0]}
       }
-      if(!pick){failed=true;break}
-      const {a,b}=pick;games.push({a:a.slice(),b:b.slice()});used.add(gameKey(...a,...b));
+
+      if(!candidates.length){failed=true;break}
+
+      candidates.sort((x,y)=>
+        x.partnerRepeats-y.partnerRepeats||
+        x.opponentPairRepeats-y.opponentPairRepeats||
+        x.opponentImbalance-y.opponentImbalance||
+        y.remainingScore-x.remainingScore||
+        x.lastAppearance-y.lastAppearance
+      );
+
+      const top=Math.min(8,candidates.length);
+      const pick=candidates[Math.floor(Math.random()*top)];
+
+      const {a,b}=pick;
+      games.push({a:a.slice(),b:b.slice()});
+      used.add(gameIdentity(a,b));
+
       for(const id of [...a,...b])remaining[id]--;
-      partner[a[0]][a[1]]=(partner[a[0]][a[1]]||0)+1;partner[a[1]][a[0]]=(partner[a[1]][a[0]]||0)+1;
-      partner[b[0]][b[1]]=(partner[b[0]][b[1]]||0)+1;partner[b[1]][b[0]]=(partner[b[1]][b[0]]||0)+1;
-      for(const x of a)for(const y of b){opp[x][y]=(opp[x][y]||0)+1;opp[y][x]=(opp[y][x]||0)+1}
+
+      for(const side of [a,b]){
+        partner[side[0]][side[1]]=(partner[side[0]][side[1]]||0)+1;
+        partner[side[1]][side[0]]=(partner[side[1]][side[0]]||0)+1;
+      }
+
+      const aPair=pairKey(...a),bPair=pairKey(...b);
+      for(const x of a){
+        for(const y of b){
+          opp[x][y]=(opp[x][y]||0)+1;
+          opp[y][x]=(opp[y][x]||0)+1;
+        }
+        oppPair[x][bPair]=(oppPair[x][bPair]||0)+1;
+      }
+      for(const y of b)oppPair[y][aPair]=(oppPair[y][aPair]||0)+1;
     }
-    if(failed||games.length!==total||ids.some(id=>remaining[id]!==0))continue;
-    let repeat=0;for(const id of ids)for(const v of Object.values(partner[id]))repeat+=Math.max(0,v-1);
-    let or=0;for(const id of ids)for(const v of Object.values(opp[id]))or+=Math.max(0,v-1);
-    const pack=maxDisjointPack(games,desiredCourts),score=repeat*100+or+(desiredCourts-pack)*10000;
-    if(score<best.score){best={games,score,pack};if(score===0)break}
+
+    if(failed||games.length!==totalGames)continue;
+    if(ids.some(id=>remaining[id]!==0))continue;
+
+    const pack=maxDisjointPack(games,desiredCourts);
+    if(pack<desiredCourts)continue;
+
+    let partnerRepeat=0,opponentPairRepeat=0,opponentSpread=0,appearanceDeviation=0;
+
+    for(const id of ids){
+      for(const v of Object.values(partner[id]))partnerRepeat+=Math.max(0,v-1);
+      for(const v of Object.values(oppPair[id]))opponentPairRepeat+=Math.max(0,v-1);
+
+      const counts=Object.values(opp[id]);
+      if(counts.length)opponentSpread+=Math.max(...counts)-Math.min(...counts);
+
+      appearanceDeviation+=Math.abs(desired[id]-target);
+    }
+
+    const score=
+      partnerRepeat*1000000+
+      opponentPairRepeat*100000+
+      opponentSpread*100+
+      appearanceDeviation+
+      (desiredCourts-pack)*10000000;
+
+    if(score<bestScore){
+      bestScore=score;
+      best={games,score,pack};
+
+      const partnerLowerBound=ids.reduce((sum,id)=>{
+        const unique=Math.min(n-1,desired[id]);
+        return sum+Math.max(0,desired[id]-unique);
+      },0);
+
+      if(partnerRepeat<=partnerLowerBound&&opponentPairRepeat===0&&pack===desiredCourts)break;
+    }
   }
-  return best.games.length===total&&best.pack>=desiredCourts?best.games:null;
-}
-function buildSchedule(t){
+
+  return best?.games||null;
+}function buildSchedule(t){
   const total=calcGames(t.playerCount,t.gamesPerPlayer);
   let raw=null;
 
@@ -679,14 +799,73 @@ function playoffMatchCard(t,m,key){const p=playoffState(t);if(!m)return "";const
 function setupTeamPlayoffs(t){const p=playoffState(t);if(p.mode)return p;const r=rankings(t),sky=r.filter(x=>x.team==="sky"),net=r.filter(x=>x.team==="net"),large=t.playerCount>=16;if(!leagueComplete(t))return p;p.mode="team";p.large=large;p.matches={};if(large){p.matches.q1={label:"QUALIFIER 1",sideA:`${sky[2].name} + ${sky[4].name}`,sideB:`${net[3].name} + ${net[5].name}`};p.matches.q2={label:"QUALIFIER 2",sideA:`${sky[3].name} + ${sky[5].name}`,sideB:`${net[2].name} + ${net[4].name}`};p.matches.sf1={label:"SEMI-FINAL 1",sideA:`${sky[0].name} + ${sky[1].name}`,sideB:"Winner Q1"};p.matches.sf2={label:"SEMI-FINAL 2",sideA:`${net[0].name} + ${net[1].name}`,sideB:"Winner Q2"};}else{p.matches.sf1={label:"SEMI-FINAL 1",sideA:`${sky[0].name} + ${sky[2].name}`,sideB:`${net[1].name} + ${net[3].name}`};p.matches.sf2={label:"SEMI-FINAL 2",sideA:`${sky[1].name} + ${sky[3].name}`,sideB:`${net[0].name} + ${net[2].name}`};}p.matches.final={label:"FINAL",sideA:"Winner SF1",sideB:"Winner SF2"};save();return p}
 function setupRRPlayoffs(t){const p=playoffState(t);if(p.mode)return p;if(!leagueComplete(t))return p;p.mode="rr";p.cards={};p.matches={sf1:{label:"SEMI-FINAL 1",sideA:"Team 1",sideB:"Team 3"},sf2:{label:"SEMI-FINAL 2",sideA:"Team 2",sideB:"Team 4"},final:{label:"FINAL",sideA:"Winner SF1",sideB:"Winner SF2"}};save();return p}
 function playoffTeamFromCards(t,cardNo){const p=playoffState(t);return Object.entries(p.cards||{}).filter(([,n])=>Number(n)===cardNo).map(([rank])=>rankings(t).find(x=>x.rank===Number(rank))?.name).filter(Boolean)}
-function rrCardsUI(t,p){const q=rankings(t).slice(0,8);const cards=p.cards||{};const counts=[1,2,3,4].reduce((o,n)=>(o[n]=Object.values(cards).filter(v=>Number(v)===n).length,o),{});return `<section class="card compact-section"><div class="section-head"><div><div class="eyebrow">TRUMP CARD CEREMONY</div><h2>Ranked picks</h2></div><span class="small muted">#1 picks first · #8 picks last · 2 players per card</span></div><div class="card-picks">${q.map(x=>`<div class="pick-row"><b>#${x.rank} ${esc(x.name)}</b><select class="field" data-card-rank="${x.rank}"><option value="">Select card</option>${[1,2,3,4].map(n=>`<option value="${n}" ${Number(cards[x.rank])===n?"selected":""} ${counts[n]>=2&&Number(cards[x.rank])!==n?"disabled":""}>Card ${n} (${counts[n]}/2)</option>`).join("")}</select></div>`).join("")}</div><div class="trump-grid">${[1,2,3,4].flatMap(n=>[0,1].map(()=>`<div class="trump-card c${n}"><b>${n}</b><span>TRUMP</span></div>`)).join("")}</div></section>`}
+function ensureTrumpSlots(p){
+  if(!Array.isArray(p.trumpSlots)||p.trumpSlots.length!==8)p.trumpSlots=[1,1,2,2,3,3,4,4].sort(()=>Math.random()-.5);
+  p.trumpRevealed??=Array(8).fill(false);
+  p.trumpOwners??=Array(8).fill(null);
+  p.cards??={};
+}
+function rrCardsUI(t,p){
+  ensureTrumpSlots(p);
+  const q=rankings(t).slice(0,8);
+  const revealed=p.trumpRevealed;
+  const owners=p.trumpOwners;
+  const picked=owners.filter(x=>x!==null&&x!==undefined).length;
+  const nextPlayer=q[picked];
+
+  return `<section class="card compact-section">
+    <div class="section-head">
+      <div>
+        <div class="eyebrow">TRUMP CARD CEREMONY</div>
+        <h2>${picked<8?"Mystery Card Selection":"Cards Revealed"}</h2>
+      </div>
+      <span class="small muted">#1 picks first · #8 picks last</span>
+    </div>
+    <div class="trump-picker-status">
+      <b>${picked<8?`#${picked+1} ${esc(nextPlayer?.name||"Player")}`:"All 8 cards revealed"}</b>
+      <span>${picked<8?"Choose any face-down card":"Semifinal sides are assigned"}</span>
+    </div>
+    <div class="trump-mystery-grid">
+      ${p.trumpSlots.map((cardNo,i)=>{
+        const isRevealed=!!revealed[i];
+        const ownerRank=owners[i];
+        const owner=ownerRank?q[ownerRank-1]?.name:"";
+        const canPick=!isRevealed&&picked<8;
+        return `<button type="button" class="trump-mystery-card card-${cardNo} ${isRevealed?"revealed":"face-down"} ${canPick?"selectable":""}" data-trump-slot="${i}" ${canPick?"":"disabled"}>
+          <span class="trump-card-back">${isRevealed?`CARD ${cardNo}`:"SHUTTLE SYNDICATE"}</span>
+          ${isRevealed?`<strong>CARD ${cardNo}</strong><small>${owner?esc(owner):""}</small>`:"<small>SELECT</small>"}
+        </button>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
 function playoffPage(t){if(!t.started)return `<section class="hero page-hero"><div class="eyebrow">PLAYOFFS</div><h1>Waiting for league</h1><p class="muted">Complete the league stage before playoff qualification is activated.</p></section>`;if(!leagueComplete(t))return `<section class="hero page-hero"><div class="eyebrow">PLAYOFFS</div><h1>League stage in progress</h1><p class="muted">${t.games.filter(g=>g.status==="done").length}/${t.games.length} league games completed. Rankings remain live; playoff positions are provisional.</p></section>`;const p=t.type==="Team vs Team"?setupTeamPlayoffs(t):setupRRPlayoffs(t);if(t.type==="Round Robin"){const q=rankings(t).slice(0,8);return `<section class="hero page-hero"><div class="eyebrow">ROUND ROBIN PLAYOFFS</div><h1>PLAYOFFS</h1><p class="muted">Top 8 qualified from the completed league.</p></section><section class="card compact-section"><div class="section-head"><h2>Top 8 Qualifiers</h2><span class="notice ok">QUALIFIED</span></div><div class="players-grid">${q.map(x=>`<div class="player-card qual"><b>#${x.rank} ${esc(x.name)}</b><div class="small muted">${x.w} W · ${x.l} L · ${Math.round(x.wp*100)}%</div></div>`).join("")}</div></section>${rrCardsUI(t,p)}<section class="bracket">${playoffMatchCard(t,p.matches.sf1,"sf1")}${playoffMatchCard(t,p.matches.sf2,"sf2")}${playoffMatchCard(t,p.matches.final,"final")}</section>${resultSection(t)}`}
   const r=rankings(t),sky=r.filter(x=>x.team==="sky"),net=r.filter(x=>x.team==="net");return `<section class="hero page-hero"><div class="eyebrow">TEAM VS TEAM PLAYOFFS</div><h1>PLAYOFFS</h1><p class="muted">${t.playerCount>=16?"Ranks 1–2 are direct semifinal positions; ranks 3–6 enter qualifiers.":"Top 4 from each team qualify directly for the semifinals."}</p></section><section class="dual-team ranking-grid">${teamRank(t,"SKY SMASHERS","sky",sky)}${teamRank(t,"NET HUNTERS","net",net)}</section><section class="bracket">${t.playerCount>=16?`${playoffMatchCard(t,p.matches.q1,"q1")}${playoffMatchCard(t,p.matches.q2,"q2")}`:""}${playoffMatchCard(t,p.matches.sf1,"sf1")}${playoffMatchCard(t,p.matches.sf2,"sf2")}${playoffMatchCard(t,p.matches.final,"final")}</section>${resultSection(t)}`}
 function submitPlayoff(key){const t=state.tournament,m=playoffState(t).matches[key],a=num($("#po-a-"+key)?.value,-1),b=num($("#po-b-"+key)?.value,-1);if(!m||a<0||b<0||a===b){alert("Enter two different non-negative scores.");return}m.score=[a,b];m.winner=a>b?m.sideA:m.sideB;const p=playoffState(t);if(key==="q1"&&p.matches.sf1.sideB==="Winner Q1")p.matches.sf1.sideB=m.winner;if(key==="q2"&&p.matches.sf2.sideB==="Winner Q2")p.matches.sf2.sideB=m.winner;if(key==="sf1")p.matches.final.sideA=m.winner;if(key==="sf2")p.matches.final.sideB=m.winner;if(key==="final"){p.champion=m.winner;p.finalScore=[a,b];p.completedAt=Date.now()}save();render()}
 window.submitPlayoffScore=submitPlayoff;
 function resultSection(t){const p=playoffState(t);if(!p.champion)return "";return `<section class="result-card"><div class="result-trophy">&#9819;</div><div class="eyebrow">TOURNAMENT COMPLETE</div><div class="result-brand">SHUTTLE SYNDICATE</div><div class="result-type">${esc(t.type)} &middot; FINAL RESULT</div><div class="champion-label">CHAMPION</div><div class="champion-name">${esc(p.champion)}</div><div class="final-score">FINAL &middot; ${p.finalScore[0]} &mdash; ${p.finalScore[1]}</div><div class="result-download"><div><b>RESULT CARD READY</b><span>Champion &middot; Final score &middot; Playoffs &middot; Full ranking</span></div><button class="btn good" onclick="downloadResult()">DOWNLOAD RESULT</button></div></section>`}function resultData(t){const p=playoffState(t),r=rankings(t);return {title:"SHUTTLE SYNDICATE",type:t.type,champion:p.champion,finalScore:p.finalScore,ranking:r,playoff:p,teams:t.teams,players:t.players}}
 window.downloadResult=()=>{const t=state.tournament,p=playoffState(t);if(!p.champion)return;const d=resultData(t),rows=d.ranking.map(r=>`<tr><td>${r.rank}</td><td>${esc(r.name)}</td><td>${r.gp}</td><td>${r.w}</td><td>${r.l}</td><td>${Math.round(r.wp*100)}%</td><td>${r.pf}</td><td>${r.pa}</td><td>${r.pd}</td></tr>`).join("");const playoffRows=Object.values(p.matches||{}).map(m=>`<div class="m"><b>${esc(m.label)}</b><span>${esc(m.sideA)} ${m.score?m.score[0]:"—"} vs ${m.score?m.score[1]:"—"} ${esc(m.sideB)}</span></div>`).join("");const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${t.type==="Round Robin"?1500:1050}" viewBox="0 0 1080 ${t.type==="Round Robin"?1500:1050}"><foreignObject x="0" y="0" width="1080" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,sans-serif;background:#071019;color:#eef7ff;min-height:100%;padding:54px;box-sizing:border-box"><div style="font-size:28px;font-weight:900;letter-spacing:4px">SHUTTLE SYNDICATE</div><div style="margin-top:8px;color:#8ea4b7;font-size:16px">${esc(t.type)} · TOURNAMENT RESULT</div><div style="margin-top:55px;color:#5ff0a0;font-size:18px;font-weight:900;letter-spacing:3px">CHAMPION</div><div style="font-size:56px;font-weight:950;margin-top:8px">${esc(p.champion)}</div><div style="font-size:32px;font-weight:900;margin-top:14px">FINAL · ${p.finalScore[0]} — ${p.finalScore[1]}</div><div style="margin-top:55px;font-size:22px;font-weight:900">PLAYOFFS</div>${playoffRows}<div style="margin-top:42px;font-size:22px;font-weight:900">FULL RANKING</div><table style="width:100%;border-collapse:collapse;margin-top:12px;font-size:14px"><thead><tr>${["#","Player","M","W","L","Win %","PF","PA","Diff"].map(x=>`<th style="text-align:left;padding:9px;border-bottom:1px solid #294054">${x}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table><div style="margin-top:45px;color:#718596;font-size:12px;letter-spacing:1px">Created by Irfan Shaik · ${APP_VERSION}</div></div></foreignObject></svg>`;const blob=new Blob([svg],{type:"image/svg+xml"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`Shuttle-Syndicate-${t.id}-Result.svg`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
-function bindPage(){document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{state.page=b.dataset.page;render()});$("#adminHome")?.addEventListener("click",()=>{state.page="admin";window.location.hash="admin";render()});document.querySelectorAll("[data-present]").forEach(x=>x.onchange=()=>{const p=state.tournament.players.find(p=>p.id===x.dataset.present);if(p)p.present=x.checked;save();render()});$("#startLeague")?.addEventListener("click",()=>{const t=state.tournament,available=t.players.filter(p=>p.present===true);if(available.length<4){alert("At least 4 players must be available.");return}if(t.type==="Team vs Team"){const sky=available.filter(p=>p.team==="sky").length,net=available.filter(p=>p.team==="net").length;if(sky<2||net<2){alert("Team vs Team needs at least 2 available Sky players and 2 available Net players.");return}}t.started=true;const initial=assignInitialCourts(t);if(!initial.length){t.started=false;alert("No eligible game can be formed. Check in more players.");return}save();state.page="live";render()});$("#playerFilter")?.addEventListener("change",e=>{state.playerFilter=e.target.value;render()});document.querySelectorAll("[data-card-rank]").forEach(sel=>sel.onchange=()=>{const p=playoffState(state.tournament),rank=sel.dataset.cardRank;p.cards??={};const value=sel.value;const count=Object.entries(p.cards).filter(([r,n])=>r!==rank&&String(n)===value).length;if(value&&count>=2){alert(`Card ${value} already has two players.`);render();return}p.cards[rank]=value;const teams=[1,2,3,4].map(n=>playoffTeamFromCards(state.tournament,n));p.matches.sf1.sideA=teams[0].length===2?teams[0].join(" + "):"Team 1";p.matches.sf1.sideB=teams[2].length===2?teams[2].join(" + "):"Team 3";p.matches.sf2.sideA=teams[1].length===2?teams[1].join(" + "):"Team 2";p.matches.sf2.sideB=teams[3].length===2?teams[3].join(" + "):"Team 4";save();render()})}
+function bindPage(){document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{state.page=b.dataset.page;render()});$("#adminHome")?.addEventListener("click",()=>{state.page="admin";window.location.hash="admin";render()});document.querySelectorAll("[data-present]").forEach(x=>x.onchange=()=>{const p=state.tournament.players.find(p=>p.id===x.dataset.present);if(p)p.present=x.checked;save();render()});$("#startLeague")?.addEventListener("click",()=>{const t=state.tournament,available=t.players.filter(p=>p.present===true);if(available.length<4){alert("At least 4 players must be available.");return}if(t.type==="Team vs Team"){const sky=available.filter(p=>p.team==="sky").length,net=available.filter(p=>p.team==="net").length;if(sky<2||net<2){alert("Team vs Team needs at least 2 available Sky players and 2 available Net players.");return}}t.started=true;const initial=assignInitialCourts(t);if(!initial.length){t.started=false;alert("No eligible game can be formed. Check in more players.");return}save();state.page="live";render()});$("#playerFilter")?.addEventListener("change",e=>{state.playerFilter=e.target.value;render()});document.querySelectorAll("[data-trump-slot]").forEach(btn=>btn.onclick=()=>{
+  const t=state.tournament,p=playoffState(t);
+  ensureTrumpSlots(p);
+  const slot=Number(btn.dataset.trumpSlot);
+  const picked=p.trumpOwners.filter(x=>x!==null&&x!==undefined).length;
+  if(slot<0||slot>7||picked>=8||p.trumpRevealed[slot])return;
+
+  const cardNo=Number(p.trumpSlots[slot]);
+  const rank=picked+1;
+  p.cards[String(rank)]=cardNo;
+  p.trumpRevealed[slot]=true;
+  p.trumpOwners[slot]=rank;
+
+  const teams=[1,2,3,4].map(n=>playoffTeamFromCards(t,n));
+  p.matches.sf1.sideA=teams[0].length===2?teams[0].join(" + "):"Team 1";
+  p.matches.sf1.sideB=teams[2].length===2?teams[2].join(" + "):"Team 3";
+  p.matches.sf2.sideA=teams[1].length===2?teams[1].join(" + "):"Team 2";
+  p.matches.sf2.sideB=teams[3].length===2?teams[3].join(" + "):"Team 4";
+  save();
+  render();
+});}
 function sharedLoadingPage(){return `<div class="app-shell rr-theme"><header class="topbar"><div><div class="brand">SHUTTLE <span>SYNDICATE</span></div><div class="subbrand">SHARED BOARD · ${APP_VERSION}</div></div></header><main class="container"><section class="hero page-hero"><div class="eyebrow">LIVE BOARD</div><h1>Loading tournament</h1><p class="muted">Connecting to the shared tournament board...</p></section></main></div>`}
 function render(){if(state.page==="admin"&&!state.shared){renderAdmin();return}const t=state.tournament;if(!t){if(state.shared){document.querySelector("#app").innerHTML=sharedLoadingPage();return}state.page="admin";renderAdmin();return}const theme=t.type==="Team vs Team"?"tvt-theme":"rr-theme",content=state.page==="teams"?teamsPage(t):state.page==="live"?livePage(t):state.page==="schedule"?schedulePage(t):playoffPage(t);document.querySelector("#app").innerHTML=`<div class="app-shell ${theme}">${header(t)}<main class="container">${content}</main>${nav()}<div class="footer">Created by Irfan Shaik · ${APP_VERSION}</div></div>`;bindPage()}
 load();const hash=window.location.hash;const params=new URLSearchParams(window.location.search);const boardQuery=params.get("board");if(hash==="#admin"){state.page="admin";state.shared=false;state.canScore=true;render()}else{const boardHash=hash.match(/^#board=(.+)$/);const id=boardQuery||(boardHash?decodeURIComponent(boardHash[1]):"");if(id){state.shared=true;state.canScore=true;state.page="teams";render();connectSharedTournament(id)}else if(state.tournament){state.shared=false;state.canScore=true;state.page="teams";render()}else{state.page="admin";state.shared=false;state.canScore=true;render()}}
